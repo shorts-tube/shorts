@@ -11,7 +11,7 @@
   h1 { font-size: 20px; }
   .card { background: #fff; border: 1px solid #e3e5e8; border-radius: 10px; padding: 16px; margin-bottom: 14px; }
   label { display: block; font-weight: 600; font-size: 13px; margin: 12px 0 5px; }
-  input[type=text], textarea { width: 100%; padding: 9px; border: 1px solid #ccd; border-radius: 6px; font-size: 14px; font-family: inherit; }
+  input[type=text], textarea, select { width: 100%; padding: 9px; border: 1px solid #ccd; border-radius: 6px; font-size: 14px; font-family: inherit; }
   button { padding: 10px 14px; border: 1px solid #ccd; background: #fff; border-radius: 6px; font-size: 14px; cursor: pointer; }
   button:hover { background: #f0f2f5; }
   button:disabled { opacity: .5; cursor: not-allowed; }
@@ -44,10 +44,9 @@
   <input type="text" id="model" placeholder="예: 샤오미 VC200 (브랜드를 함께 쓰면 검색이 잘 됩니다)">
 
   <div class="row">
-    <button id="byImage">① 이미지로 분석 (빠름)</button>
-    <button id="bySearch">① 검색해서 분석 (느림)</button>
+    <button id="byImage">① 이미지로 분석</button>
+    <button id="bySearch">① 검색해서 분석</button>
   </div>
-  <div class="muted">모호한 이름이면 왼쪽을, 브랜드가 분명하면 오른쪽을 쓰세요.</div>
 
   <label>제품명</label>
   <input type="text" id="pname" placeholder="분석 후 자동 입력 · 직접 수정 가능">
@@ -55,6 +54,14 @@
   <label>특장점 (한 줄에 하나)</label>
   <textarea id="feat" rows="7" placeholder="분석 후 자동 입력 · 직접 수정 가능"></textarea>
   <div class="muted" id="sources"></div>
+
+  <label>내레이션 음성</label>
+  <select id="voice">
+    <option value="auto">자동 (대본의 화자 성별에 맞춤)</option>
+    <option value="ko-KR-SunHiNeural">여성 · 선희</option>
+    <option value="ko-KR-HyunsuMultilingualNeural">남성 · 현수</option>
+    <option value="ko-KR-InJoonNeural">남성 · 인준</option>
+  </select>
 
   <button class="primary" id="go">② 대본 · 음성 만들기</button>
 </div>
@@ -64,12 +71,15 @@
 
 <script>
 const WORKER = 'https://gemini-proxy.webnjw01.workers.dev';
-const TEXT_MODELS = ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.0-flash'];
-const TTS_MODEL = 'gemini-2.5-flash-preview-tts';
+const TEXT_MODELS = ['gemini-2.5-flash-lite', 'gemini-2.0-flash', 'gemini-2.5-flash'];
 const RATE = 24000;
+const SCENES = 6;
+const PER_SCENE = 33;
 
 const $ = (id) => document.getElementById(id);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const dead = new Set();
+let sticky = null;
 let IMG = null;
 let LAST = null;
 
@@ -78,7 +88,7 @@ function log(msg) {
   $('log').textContent += `\n[${t}] ${msg}`;
   $('log').scrollTop = $('log').scrollHeight;
 }
-function resetLog(msg) { $('log').textContent = msg; }
+function resetLog(m) { $('log').textContent = m; }
 function lock(on) { ['byImage', 'bySearch', 'go'].forEach((id) => { $(id).disabled = on; }); }
 
 /* ---------- 이미지 축소 ---------- */
@@ -89,7 +99,7 @@ $('img').onchange = async (e) => {
     const r = await compress(file);
     IMG = r.b64;
     $('preview').src = 'data:image/jpeg;base64,' + r.b64;
-    $('imginfo').textContent = `${r.ow}×${r.oh} → ${r.w}×${r.h} / 약 ${Math.round(r.bytes / 1024)}KB로 압축`;
+    $('imginfo').textContent = `${r.ow}×${r.oh} → ${r.w}×${r.h} / 약 ${Math.round(r.bytes / 1024)}KB`;
   } catch (err) {
     $('imginfo').textContent = '이미지를 읽을 수 없습니다: ' + err.message;
   }
@@ -117,39 +127,48 @@ function compress(file, MAX = 768, Q = 0.85) {
   });
 }
 
-/* ---------- 모델 체인 호출 ---------- */
-async function callGemini(models, payload, timeout = 45000, rounds = 2) {
-  const list = Array.isArray(models) ? models : [models];
+/* ---------- Gemini 호출 (죽은 모델 건너뛰기) ---------- */
+async function callGemini(payload, timeout = 45000) {
+  const order = sticky ? [sticky].concat(TEXT_MODELS.filter((m) => m !== sticky)) : TEXT_MODELS.slice();
+  const live = order.filter((m) => !dead.has(m));
+  if (!live.length) throw new Error('오늘 쓸 수 있는 모델의 무료 한도를 모두 썼습니다. 한국 시간 오후 4시경에 초기화됩니다.');
+
   let lastErr = new Error('알 수 없는 오류');
-
-  for (let round = 1; round <= rounds; round++) {
-    for (const model of list) {
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), timeout);
-      try {
-        log(`${model} 요청 중…`);
-        const res = await fetch(WORKER, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ model, payload }),
-          signal: ctrl.signal,
-        });
-        const data = await res.json();
-        clearTimeout(timer);
-
-        if (data && data.error) throw new Error(`${res.status} ${data.error.message || ''}`);
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        if (!data.candidates || !data.candidates.length) throw new Error('응답이 비어 있습니다');
-        return data;
-      } catch (e) {
-        clearTimeout(timer);
-        const msg = e.name === 'AbortError' ? `시간 초과 ${timeout / 1000}초` : (e.message || String(e));
-        lastErr = new Error(msg);
-        const busy = /high demand|overload|unavailable|시간 초과|50[0-3]|429|quota|rate limit/i.test(msg);
-        if (!busy) { log('오류: ' + msg); throw lastErr; }
-        log(`${model} 혼잡 → 전환 (${msg.slice(0, 70)})`);
-        await sleep(2000);
+  for (const model of live) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeout);
+    try {
+      log(`${model} 요청 중…`);
+      const res = await fetch(WORKER, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model, payload }),
+        signal: ctrl.signal,
+      });
+      const data = await res.json();
+      clearTimeout(timer);
+      if (data && data.error) throw new Error(`${res.status} ${data.error.message || ''}`);
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      if (!data.candidates || !data.candidates.length) throw new Error('응답이 비어 있습니다');
+      sticky = model;
+      return data;
+    } catch (e) {
+      clearTimeout(timer);
+      const msg = e.name === 'AbortError' ? `시간 초과 ${timeout / 1000}초` : (e.message || String(e));
+      lastErr = new Error(msg);
+      if (/retry in \d+h|generate_content_free_tier_requests/i.test(msg)) {
+        dead.add(model);
+        if (sticky === model) sticky = null;
+        log(`${model} 일일 무료 한도 소진 → 오늘은 제외`);
+        continue;
       }
+      if (/high demand|overload|unavailable|시간 초과|50[0-3]|429/i.test(msg)) {
+        log(`${model} 혼잡 → 다음 모델로 전환`);
+        await sleep(1500);
+        continue;
+      }
+      log('오류: ' + msg);
+      throw lastErr;
     }
   }
   throw lastErr;
@@ -168,7 +187,7 @@ const FORMAT = `출력은 다른 말 없이 아래 형식만 사용하세요.
 추정:
 - <미루어 보이는 특징>
 
-규칙: 확인된 근거가 없는 숫자 성능값, 인증, 수상, 후기, 가격은 절대 쓰지 마세요.
+규칙: 근거 없는 숫자 성능값, 인증, 수상, 후기, 가격은 절대 쓰지 마세요.
 항목은 각 최대 5개, 한 줄 30자 이내.`;
 
 $('byImage').onclick = () => analyze(false);
@@ -184,7 +203,7 @@ async function analyze(useSearch) {
   $('sources').textContent = '';
 
   const prompt = useSearch
-    ? `"${name}" 제품을 검색해서 사양과 특장점을 정리하세요. 첨부 이미지와 같은 제품인지 확인하세요.\n검색으로 확인된 내용은 "확인됨", 이미지나 일반적 추측에 기댄 내용은 "추정"에 넣으세요.\n${FORMAT}`
+    ? `"${name}" 제품을 검색해서 사양과 특장점을 정리하세요. 첨부 이미지와 같은 제품인지 확인하세요.\n검색으로 확인된 내용은 "확인됨", 추측은 "추정"에 넣으세요.\n${FORMAT}`
     : `첨부 이미지는 "${name}" 제품입니다. 이미지에서 보이는 형태, 구조, 표기된 문구, 용도만 근거로 정리하세요.\n${FORMAT}`;
 
   const payload = {
@@ -194,10 +213,10 @@ async function analyze(useSearch) {
   if (useSearch) payload.tools = [{ google_search: {} }];
 
   try {
-    const data = await callGemini(TEXT_MODELS, payload, useSearch ? 70000 : 45000);
-    const parsed = parseResearch(textOf(data));
-    if (parsed.name) $('pname').value = parsed.name;
-    $('feat').value = parsed.confirmed.concat(parsed.guessed.map((v) => v + ' (추정)')).join('\n');
+    const data = await callGemini(payload, useSearch ? 70000 : 45000);
+    const p = parseResearch(textOf(data));
+    if (p.name) $('pname').value = p.name;
+    $('feat').value = p.confirmed.concat(p.guessed.map((v) => v + ' (추정)')).join('\n');
 
     const meta = data.candidates[0].groundingMetadata;
     const chunks = (meta && meta.groundingChunks) || [];
@@ -205,11 +224,10 @@ async function analyze(useSearch) {
       const names = chunks.slice(0, 6).map((c) => (c.web && (c.web.title || c.web.uri)) || '').filter(Boolean);
       $('sources').textContent = '출처: ' + names.join(' · ');
     }
-    log(`분석 완료 — 확인 ${parsed.confirmed.length}개 / 추정 ${parsed.guessed.length}개`);
-    log('내용을 확인·수정한 뒤 ② 버튼을 누르세요.');
+    log(`분석 완료 — 확인 ${p.confirmed.length}개 / 추정 ${p.guessed.length}개`);
   } catch (e) {
     log('분석 실패: ' + e.message);
-    log('잠시 뒤 다시 시도하거나, 특장점을 직접 입력해도 대본은 만들어집니다.');
+    log('특장점을 직접 입력해도 대본은 만들어집니다.');
   }
   lock(false);
 }
@@ -231,7 +249,7 @@ function parseResearch(text) {
   return out;
 }
 
-/* ---------- ② 대본 + 음성 ---------- */
+/* ---------- ② 대본 ---------- */
 const SCHEMA = {
   type: 'OBJECT',
   properties: {
@@ -266,7 +284,7 @@ const SCHEMA = {
   required: ['category', 'persona', 'scenes', 'youtube'],
 };
 
-function noSpace(s) { return s.replace(/\s/g, '').length; }
+const noSpace = (s) => s.replace(/\s/g, '').length;
 
 async function makeScript(pname, mname, feats, feedback) {
   const prompt = `제품: ${pname}
@@ -276,21 +294,25 @@ ${feats}
 
 위 제품의 유튜브 쇼츠 광고 대본을 한국어로 쓰세요. 제품에 잘 맞는 화자 페르소나를 골라 그 사람이 말하는 구어체로 씁니다.
 
-절대 규칙
-- narration 전체 합계는 공백 제외 185자 이상 215자 이하.
+★ 길이 규칙 (가장 중요)
+- scenes는 정확히 ${SCENES}개.
+- 각 scene의 narration은 공백 제외 ${PER_SCENE - 5}자 이상 ${PER_SCENE + 5}자 이하. 짧으면 실패입니다.
+- ${PER_SCENE}자는 "이 청소기는 한 손으로 들 수 있을 만큼 가볍고 조용합니다" 정도의 분량입니다.
+- 한 문장이 짧아지면 쉼표로 이어 두 마디로 만들어 글자 수를 채우세요.
+
+내용 규칙
 - 특장점 목록에 없는 수치, 인증, 수상, 후기, 가격은 쓰지 마세요.
-- "(추정)"이 붙은 항목은 단정하지 말고 사용자 이점 표현으로 바꾸세요. 수치는 언급 금지.
+- "(추정)"이 붙은 항목은 단정하지 말고 사용자 이점 표현으로 바꾸고 수치는 언급 금지.
 - "최고", "1위", "유일", "완벽" 같은 과장과 의료·건강 효능 주장은 금지.
 
 구성
-- scenes는 6개.
-- 1번 씬은 3초 안에 끝나는 훅.
-- 중간 씬은 사양을 생활 속 이점으로 번역.
-- 마지막 씬은 구매를 유도하는 한마디.
-- narration은 한 문장, 25자 이내. caption은 10자 이내 핵심어.
-- youtube.title은 30자 이내이며 모델명 포함. description은 3줄 뒤 해시태그 3개. tags는 한국어 8개.${feedback ? '\n\n수정 요청: ' + feedback : ''}`;
+- 1번 씬은 시선을 잡는 질문이나 공감 문구.
+- 2~5번 씬은 사양을 생활 속 이점으로 번역.
+- 6번 씬은 구매를 유도하는 한마디.
+- caption은 10자 이내 핵심어.
+- youtube.title은 30자 이내이며 모델명 포함. description은 3줄 뒤 해시태그 3개. tags는 한국어 8개.${feedback ? '\n\n★ 수정 요청: ' + feedback : ''}`;
 
-  const data = await callGemini(TEXT_MODELS, {
+  const data = await callGemini({
     contents: [{ parts: [{ text: prompt }] }],
     generationConfig: {
       temperature: 0.9,
@@ -300,77 +322,83 @@ ${feats}
   }, 50000);
 
   const script = JSON.parse(textOf(data));
-  script.chars = noSpace(script.scenes.map((s) => s.narration).join(' '));
+  script.chars = noSpace(script.scenes.map((s) => s.narration).join(''));
   return script;
 }
 
-function b64ToBytes(b64) {
-  const bin = atob(b64);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
-}
-
-async function ttsOne(text, gender) {
-  const voice = gender === 'male' ? 'Puck' : 'Kore';
-  const data = await callGemini([TTS_MODEL], {
-    contents: [{ parts: [{ text: `밝고 친근한 쇼핑 방송 톤으로, 조금 빠르게 읽어줘: ${text}` }] }],
-    generationConfig: {
-      responseModalities: ['AUDIO'],
-      speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } },
-    },
-  }, 60000, 3);
-
-  const parts = data.candidates[0].content.parts || [];
-  const hit = parts.find((p) => p.inlineData && p.inlineData.data);
-  if (!hit) throw new Error('음성 데이터가 없습니다');
-  return b64ToBytes(hit.inlineData.data);
-}
-
-async function makeVoice(script) {
-  const chunks = [];
-  const timeline = [];
-  const GAP = new Uint8Array(RATE * 2 * 0.25);
-  let cursor = 0;
-
-  for (let i = 0; i < script.scenes.length; i++) {
-    log(`음성 ${i + 1}/${script.scenes.length}`);
-    const pcm = await ttsOne(script.scenes[i].narration, script.persona.gender);
-    const dur = pcm.length / (RATE * 2);
-    timeline.push({ index: i, start: +cursor.toFixed(2), end: +(cursor + dur).toFixed(2) });
-    chunks.push(pcm);
-    cursor += dur;
-    if (i < script.scenes.length - 1) { chunks.push(GAP); cursor += 0.25; }
-    await sleep(800);
+/* ---------- 음성 (Edge TTS) ---------- */
+async function ttsOne(text, voice) {
+  let lastErr;
+  for (let i = 1; i <= 3; i++) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 30000);
+    try {
+      const res = await fetch(WORKER + '/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, voice, rate: '+8%' }),
+        signal: ctrl.signal,
+      });
+      clearTimeout(timer);
+      if (!res.ok) {
+        let m = 'HTTP ' + res.status;
+        try { const j = await res.json(); if (j.error) m = j.error.message; } catch (e) {}
+        throw new Error(m);
+      }
+      const buf = await res.arrayBuffer();
+      if (buf.byteLength < 400) throw new Error('음성이 비어 있습니다');
+      return buf;
+    } catch (e) {
+      clearTimeout(timer);
+      lastErr = e;
+      if (i < 3) await sleep(1200);
+    }
   }
-
-  const total = chunks.reduce((n, c) => n + c.length, 0);
-  const merged = new Uint8Array(total);
-  let off = 0;
-  chunks.forEach((c) => { merged.set(c, off); off += c.length; });
-  return { wav: pcmToWav(merged), duration: +cursor.toFixed(1), timeline };
+  throw lastErr;
 }
 
-function pcmToWav(pcm) {
-  const buf = new ArrayBuffer(44 + pcm.length);
+async function makeVoice(script, voice) {
+  log(`음성 ${script.scenes.length}개 동시 생성 중…`);
+  const mp3s = await Promise.all(script.scenes.map((s) => ttsOne(s.narration, voice)));
+
+  const octx = new OfflineAudioContext(1, RATE, RATE);
+  const bufs = [];
+  for (const m of mp3s) bufs.push(await octx.decodeAudioData(m));
+
+  const GAP = Math.round(RATE * 0.25);
+  let total = 0;
+  bufs.forEach((b, i) => { total += b.length + (i < bufs.length - 1 ? GAP : 0); });
+
+  const out = new Float32Array(total);
+  const timeline = [];
+  let off = 0;
+  bufs.forEach((b, i) => {
+    out.set(b.getChannelData(0), off);
+    timeline.push({ start: +(off / RATE).toFixed(2), end: +((off + b.length) / RATE).toFixed(2) });
+    off += b.length + (i < bufs.length - 1 ? GAP : 0);
+  });
+
+  return { wav: toWav(out), duration: +(total / RATE).toFixed(1), timeline };
+}
+
+function toWav(float) {
+  const n = float.length;
+  const buf = new ArrayBuffer(44 + n * 2);
   const v = new DataView(buf);
   const str = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
-  str(0, 'RIFF');
-  v.setUint32(4, 36 + pcm.length, true);
-  str(8, 'WAVEfmt ');
-  v.setUint32(16, 16, true);
-  v.setUint16(20, 1, true);
-  v.setUint16(22, 1, true);
-  v.setUint32(24, RATE, true);
-  v.setUint32(28, RATE * 2, true);
-  v.setUint16(32, 2, true);
-  v.setUint16(34, 16, true);
-  str(36, 'data');
-  v.setUint32(40, pcm.length, true);
-  new Uint8Array(buf, 44).set(pcm);
+  str(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); str(8, 'WAVEfmt ');
+  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, RATE, true); v.setUint32(28, RATE * 2, true);
+  v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  str(36, 'data'); v.setUint32(40, n * 2, true);
+  for (let i = 0; i < n; i++) {
+    const s = Math.max(-1, Math.min(1, float[i]));
+    v.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+  }
   return new Blob([buf], { type: 'audio/wav' });
 }
 
+/* ---------- 실행 ---------- */
 $('go').onclick = async () => {
   const pname = $('pname').value.trim();
   const mname = $('model').value.trim();
@@ -383,25 +411,26 @@ $('go').onclick = async () => {
 
   try {
     let script = null, feedback = '';
-    for (let tryNo = 1; tryNo <= 3; tryNo++) {
+    for (let n = 1; n <= 2; n++) {
       script = await makeScript(pname, mname, feats, feedback);
-      log(`대본 ${tryNo}차 — 공백 제외 ${script.chars}자`);
-      if (script.chars >= 185 && script.chars <= 215) break;
-      feedback = script.chars > 215
-        ? `전체가 ${script.chars}자로 길다. ${script.chars - 200}자 정도 줄여라.`
-        : `전체가 ${script.chars}자로 짧다. ${200 - script.chars}자 정도 늘려라.`;
-      if (tryNo < 3) log('길이 조정 후 다시 생성');
+      log(`대본 ${n}차 — 공백 제외 ${script.chars}자 (목표 185~215자)`);
+      if (script.chars >= 180 && script.chars <= 220) break;
+      feedback = script.chars > 220
+        ? `전체가 ${script.chars}자로 길다. 각 narration을 ${PER_SCENE}자 안쪽으로 줄여 전체 200자로 맞춰라.`
+        : `전체가 ${script.chars}자로 너무 짧다. 각 narration을 공백 제외 ${PER_SCENE}자까지 늘려 전체 200자로 맞춰라. 문장을 쉼표로 이어 설명을 덧붙여라.`;
     }
 
-    log(`화자: ${script.persona.gender === 'male' ? '남성' : '여성'} · ${script.persona.tone}`);
-    const voice = await makeVoice(script);
-    log(`완성 — 음성 ${voice.duration}초`);
+    const pick = $('voice').value;
+    const voice = pick !== 'auto' ? pick
+      : (script.persona.gender === 'male' ? 'ko-KR-HyunsuMultilingualNeural' : 'ko-KR-SunHiNeural');
+    log(`화자: ${script.persona.gender === 'male' ? '남성' : '여성'} · ${script.persona.tone} / 음성 ${voice}`);
 
-    LAST = { script, voice };
-    render(script, voice);
+    const v = await makeVoice(script, voice);
+    log(`완성 — 음성 ${v.duration}초`);
+    LAST = { script, voice: v };
+    render(script, v);
   } catch (e) {
     log('실패: ' + e.message);
-    log('구글 서버 혼잡이면 1~2분 뒤 같은 버튼을 다시 누르세요.');
   }
   lock(false);
 };
@@ -411,20 +440,20 @@ function render(script, voice) {
   const url = URL.createObjectURL(voice.wav);
   const esc = (s) => String(s).replace(/</g, '&lt;');
 
-  let html = '<div class="card">';
-  html += `<span class="badge ${good ? 'ok' : 'warn'}">${voice.duration}초 · ${good ? '적정' : '범위 밖'}</span> `;
-  html += `<span class="badge ok">${esc(script.category)}</span>`;
-  html += `<div class="muted">화자 선택 이유: ${esc(script.persona.reason)}</div>`;
-  html += `<audio controls src="${url}"></audio>`;
-  html += `<div style="margin-top:8px"><a href="${url}" download="narration.wav">음성 파일 내려받기</a></div>`;
+  let h = '<div class="card">';
+  h += `<span class="badge ${good ? 'ok' : 'warn'}">${voice.duration}초 · ${good ? '적정' : '범위 밖'}</span> `;
+  h += `<span class="badge ok">${esc(script.category)}</span>`;
+  h += `<div class="muted">화자 선택 이유: ${esc(script.persona.reason)}</div>`;
+  h += `<audio controls src="${url}"></audio>`;
+  h += `<div style="margin-top:8px"><a href="${url}" download="narration.wav">음성 파일 내려받기</a></div>`;
   script.scenes.forEach((s, i) => {
     const t = voice.timeline[i];
-    html += `<div class="scene"><b>${i + 1}. ${esc(s.caption)}</b> <span class="muted">${t.start}s~${t.end}s</span><br>${esc(s.narration)}</div>`;
+    h += `<div class="scene"><b>${i + 1}. ${esc(s.caption)}</b> <span class="muted">${t.start}s~${t.end}s · ${noSpace(s.narration)}자</span><br>${esc(s.narration)}</div>`;
   });
-  html += '</div><div class="card"><label>유튜브 제목</label>' + esc(script.youtube.title);
-  html += '<label>설명</label><div style="white-space:pre-wrap">' + esc(script.youtube.description) + '</div>';
-  html += '<label>태그</label>' + esc(script.youtube.tags.join(', ')) + '</div>';
-  $('out').innerHTML = html;
+  h += '</div><div class="card"><label>유튜브 제목</label>' + esc(script.youtube.title);
+  h += '<label>설명</label><div style="white-space:pre-wrap">' + esc(script.youtube.description) + '</div>';
+  h += '<label>태그</label>' + esc(script.youtube.tags.join(', ')) + '</div>';
+  $('out').innerHTML = h;
 }
 </script>
 </body>
