@@ -60,11 +60,18 @@
   <select id="voice">
     <option value="auto">자동 (대본의 화자 성별에 맞춤)</option>
     <option value="polly:Seoyeon">여성 · 서연 (가장 안정적)</option>
-    <option value="gemini:Kore">여성 · Kore</option>
-    <option value="gemini:Leda">여성 · Leda (밝음)</option>
-    <option value="gemini:Puck">남성 · Puck</option>
-    <option value="gemini:Charon">남성 · Charon (차분함)</option>
+    <option value="openai:coral">여성 · Coral (밝은 광고 톤)</option>
+    <option value="openai:nova">여성 · Nova (부드러움)</option>
+    <option value="openai:sage">여성 · Sage (차분함)</option>
+    <option value="openai:ash">남성 · Ash (활기찬)</option>
+    <option value="openai:onyx">남성 · Onyx (중저음)</option>
+    <option value="gemini:Leda">여성 · Leda (Gemini)</option>
+    <option value="gemini:Kore">여성 · Kore (Gemini)</option>
+    <option value="gemini:Puck">남성 · Puck (Gemini)</option>
+    <option value="xai:ara">여성 · Ara (xAI, 따뜻함)</option>
+    <option value="xai:eve">여성 · Eve (xAI, 에너지)</option>
   </select>
+
 
   <button class="primary" id="go">② 대본 · 음성 만들기</button>
 </div>
@@ -339,18 +346,39 @@ ${feats}
 
 /* ---------- 음성 (Edge TTS) ---------- */
 /* ---------- 음성 (Puter.js) ---------- */
+const STYLE = '한국어를 밝고 친근한 쇼핑 방송 톤으로, 조금 빠르고 또렷하게 읽어주세요.';
+
 function ttsOptions(voice) {
   const [kind, name] = voice.split(':');
+
   if (kind === 'gemini') {
     return {
       provider: 'gemini',
-      model: 'gemini-2.5-flash-preview-tts',
+      model: 'gemini-3.8-flash-tts',
       voice: name,
-      instructions: '밝고 친근한 쇼핑 방송 톤으로, 조금 빠르게 읽어주세요.',
+      instructions: STYLE,
     };
   }
-  return { voice: name, engine: 'neural', language: 'ko-KR' };
+  if (kind === 'openai') {
+    return {
+      provider: 'openai',
+      model: 'gpt-4o-mini-tts',
+      voice: name,
+      response_format: 'mp3',
+      instructions: STYLE,
+    };
+  }
+  if (kind === 'xai') {
+    return {
+      provider: 'xai',
+      voice: name,
+      language: 'ko',
+      output_format: 'mp3',
+    };
+  }
+  return { provider: 'aws-polly', voice: name, engine: 'neural', language: 'ko-KR' };
 }
+
 
 async function ttsOne(text, voice) {
   if (typeof puter === 'undefined') throw new Error('Puter.js를 불러오지 못했습니다. 새로고침해 보세요.');
@@ -365,9 +393,12 @@ async function ttsOne(text, voice) {
       if (buf.byteLength < 400) throw new Error('음성이 비어 있습니다');
       return buf;
     } catch (e) {
-      lastErr = new Error(e.message || (e.error && e.error.message) || String(e));
-      if (i < 3) { log(`음성 재시도 ${i}/2 (${lastErr.message.slice(0, 50)})`); await sleep(1500); }
+      const raw = e && (e.message || (e.error && (e.error.message || e.error.code)));
+      lastErr = new Error(raw || JSON.stringify(e).slice(0, 200));
+      log(`음성 오류 (${i}/3): ${lastErr.message.slice(0, 120)}`);
+      if (i < 3) await sleep(1500);
     }
+
   }
   throw lastErr;
 }
@@ -429,8 +460,9 @@ $('go').onclick = async () => {
     }
 
   const pick = $('voice').value;
-    const voice = pick !== 'auto' ? pick
-      : (script.persona.gender === 'male' ? 'gemini:Puck' : 'polly:Seoyeon');
+      const voice = pick !== 'auto' ? pick
+      : (script.persona.gender === 'male' ? 'openai:ash' : 'openai:coral');
+
     log(`화자: ${script.persona.gender === 'male' ? '남성' : '여성'} · ${script.persona.tone} / 음성 ${voice}`);
 
     const v = await makeVoice(script, voice);
