@@ -364,45 +364,38 @@ async function ttsOne(text, voice) {
   throw lastErr;
 }
 
-async function makeVoice(script, voice) {
-  log(`음성 ${script.scenes.length}개 동시 생성 중…`);
-  const mp3s = await Promise.all(script.scenes.map((s) => ttsOne(s.narration, voice)));
-
-  const octx = new OfflineAudioContext(1, RATE, RATE);
-  const bufs = [];
-  for (const m of mp3s) bufs.push(await octx.decodeAudioData(m));
-
-  const GAP = Math.round(RATE * 0.25);
-  let total = 0;
-  bufs.forEach((b, i) => { total += b.length + (i < bufs.length - 1 ? GAP : 0); });
-
-  const out = new Float32Array(total);
-  const timeline = [];
-  let off = 0;
-  bufs.forEach((b, i) => {
-    out.set(b.getChannelData(0), off);
-    timeline.push({ start: +(off / RATE).toFixed(2), end: +((off + b.length) / RATE).toFixed(2) });
-    off += b.length + (i < bufs.length - 1 ? GAP : 0);
+function clipDuration(url, fallback) {
+  return new Promise((resolve) => {
+    const a = new Audio();
+    a.preload = 'metadata';
+    const done = (v) => resolve(v > 0 && isFinite(v) ? v : fallback);
+    a.onloadedmetadata = () => done(a.duration);
+    a.onerror = () => done(0);
+    setTimeout(() => done(a.duration), 4000);
+    a.src = url;
   });
-
-  return { wav: toWav(out), duration: +(total / RATE).toFixed(1), timeline };
 }
 
-function toWav(float) {
-  const n = float.length;
-  const buf = new ArrayBuffer(44 + n * 2);
-  const v = new DataView(buf);
-  const str = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
-  str(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); str(8, 'WAVEfmt ');
-  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
-  v.setUint32(24, RATE, true); v.setUint32(28, RATE * 2, true);
-  v.setUint16(32, 2, true); v.setUint16(34, 16, true);
-  str(36, 'data'); v.setUint32(40, n * 2, true);
-  for (let i = 0; i < n; i++) {
-    const s = Math.max(-1, Math.min(1, float[i]));
-    v.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+async function makeVoice(script, voice) {
+  log(`음성 ${script.scenes.length}개 동시 생성 중…`);
+  const bufs = await Promise.all(script.scenes.map((s) => ttsOne(s.narration, voice)));
+
+  const clips = bufs.map((b) => {
+    const blob = new Blob([b], { type: 'audio/mpeg' });
+    return { blob, url: URL.createObjectURL(blob) };
+  });
+
+  const timeline = [];
+  let cursor = 0;
+  for (let i = 0; i < clips.length; i++) {
+    const guess = noSpace(script.scenes[i].narration) / 5.7;
+    const dur = await clipDuration(clips[i].url, guess);
+    timeline.push({ start: +cursor.toFixed(2), end: +(cursor + dur).toFixed(2) });
+    cursor += dur;
   }
-  return new Blob([buf], { type: 'audio/wav' });
+
+  const merged = new Blob(clips.map((c) => c.blob), { type: 'audio/mpeg' });
+  return { audio: merged, clips, duration: +cursor.toFixed(1), timeline };
 }
 
 /* ---------- 실행 ---------- */
@@ -444,7 +437,7 @@ $('go').onclick = async () => {
 
 function render(script, voice) {
   const good = voice.duration >= 28 && voice.duration <= 42;
-  const url = URL.createObjectURL(voice.wav);
+ const url = URL.createObjectURL(voice.audio);
   const esc = (s) => String(s).replace(/</g, '&lt;');
 
   let h = '<div class="card">';
@@ -452,10 +445,11 @@ function render(script, voice) {
   h += `<span class="badge ok">${esc(script.category)}</span>`;
   h += `<div class="muted">화자 선택 이유: ${esc(script.persona.reason)}</div>`;
   h += `<audio controls src="${url}"></audio>`;
-  h += `<div style="margin-top:8px"><a href="${url}" download="narration.wav">음성 파일 내려받기</a></div>`;
+ h += `<div style="margin-top:8px"><a href="${url}" download="narration.mp3">음성 파일 내려받기</a></div>`;
   script.scenes.forEach((s, i) => {
     const t = voice.timeline[i];
-    h += `<div class="scene"><b>${i + 1}. ${esc(s.caption)}</b> <span class="muted">${t.start}s~${t.end}s · ${noSpace(s.narration)}자</span><br>${esc(s.narration)}</div>`;
+    h += `<div class="scene"><b>${i + 1}. ${esc(s.caption)}</b> <span class="muted">${t.start}s~${t.end}s · ${noSpace(s.narration)}자</span><br>${esc(s.narration)}`;
+    h += `<audio controls preload="none" src="${voice.clips[i].url}" style="height:32px"></audio></div>`;
   });
   h += '</div><div class="card"><label>유튜브 제목</label>' + esc(script.youtube.title);
   h += '<label>설명</label><div style="white-space:pre-wrap">' + esc(script.youtube.description) + '</div>';
