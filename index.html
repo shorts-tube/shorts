@@ -455,7 +455,7 @@ async function makeVoice(script, voice) {
     return { blob, url: URL.createObjectURL(blob) };
   });
 
-  return { audio: toWav(rendered), clips, duration: +rendered.duration.toFixed(1), timeline };
+  return { audio: toWav(rendered), buffer: rendered, clips, duration: +rendered.duration.toFixed(1), timeline };
 }
 
 function toWav(ab) {
@@ -525,7 +525,8 @@ function render(script, voice) {
   h += `<span class="badge ${good ? 'ok' : 'warn'}">${voice.duration}초 · ${good ? '적정' : '범위 밖'}</span> `;
   h += `<span class="badge ok">${esc(script.category)}</span>`;
   h += `<div class="muted">화자 선택 이유: ${esc(script.persona.reason)}</div>`;
-  h += `<audio controls src="${url}"></audio>`;
+  h += `<div style="margin:10px 0"><button id="playAll">▶ 전체 음성 재생</button> <button id="stopAll">■ 정지</button></div>`;
+
  h += `<div style="margin-top:8px"><a href="${url}" download="narration.wav">음성 파일 내려받기</a></div>`;
   script.scenes.forEach((s, i) => {
     const t = voice.timeline[i];
@@ -536,6 +537,25 @@ function render(script, voice) {
   h += '<label>설명</label><div style="white-space:pre-wrap">' + esc(script.youtube.description) + '</div>';
   h += '<label>태그</label>' + esc(script.youtube.tags.join(', ')) + '</div>';
   $('out').innerHTML = h;
+
+  const stop = () => {
+    if (!window.__p) return;
+    try { window.__p.src.stop(); window.__p.ac.close(); } catch (e) {}
+    window.__p = null;
+  };
+
+  $('playAll').onclick = () => {
+    stop();
+    const ac = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: voice.buffer.sampleRate });
+    const src = ac.createBufferSource();
+    src.buffer = voice.buffer;
+    src.connect(ac.destination);
+    src.start();
+    window.__p = { ac, src };
+  };
+
+  $('stopAll').onclick = stop;
+
 }
 </script>
 </body>
