@@ -29,6 +29,7 @@
   .scene b { color: #1a73e8; }
   audio { width: 100%; margin-top: 10px; }
 </style>
+<script src="https://js.puter.com/v2/"></script>
 </head>
 <body>
 
@@ -58,9 +59,11 @@
   <label>내레이션 음성</label>
   <select id="voice">
     <option value="auto">자동 (대본의 화자 성별에 맞춤)</option>
-    <option value="ko-KR-SunHiNeural">여성 · 선희</option>
-    <option value="ko-KR-HyunsuMultilingualNeural">남성 · 현수</option>
-    <option value="ko-KR-InJoonNeural">남성 · 인준</option>
+    <option value="polly:Seoyeon">여성 · 서연 (가장 안정적)</option>
+    <option value="gemini:Kore">여성 · Kore</option>
+    <option value="gemini:Leda">여성 · Leda (밝음)</option>
+    <option value="gemini:Puck">남성 · Puck</option>
+    <option value="gemini:Charon">남성 · Charon (차분함)</option>
   </select>
 
   <button class="primary" id="go">② 대본 · 음성 만들기</button>
@@ -327,31 +330,35 @@ ${feats}
 }
 
 /* ---------- 음성 (Edge TTS) ---------- */
+/* ---------- 음성 (Puter.js) ---------- */
+function ttsOptions(voice) {
+  const [kind, name] = voice.split(':');
+  if (kind === 'gemini') {
+    return {
+      provider: 'gemini',
+      model: 'gemini-2.5-flash-preview-tts',
+      voice: name,
+      instructions: '밝고 친근한 쇼핑 방송 톤으로, 조금 빠르게 읽어주세요.',
+    };
+  }
+  return { voice: name, engine: 'neural', language: 'ko-KR' };
+}
+
 async function ttsOne(text, voice) {
+  if (typeof puter === 'undefined') throw new Error('Puter.js를 불러오지 못했습니다. 새로고침해 보세요.');
+
   let lastErr;
   for (let i = 1; i <= 3; i++) {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 30000);
     try {
-      const res = await fetch(WORKER + '/tts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, voice, rate: '+8%' }),
-        signal: ctrl.signal,
-      });
-      clearTimeout(timer);
-      if (!res.ok) {
-        let m = 'HTTP ' + res.status;
-        try { const j = await res.json(); if (j.error) m = j.error.message; } catch (e) {}
-        throw new Error(m);
-      }
-      const buf = await res.arrayBuffer();
+      const audio = await puter.ai.txt2speech(text, ttsOptions(voice));
+      const src = audio && (audio.src || audio.currentSrc);
+      if (!src) throw new Error('음성 주소를 받지 못했습니다');
+      const buf = await (await fetch(src)).arrayBuffer();
       if (buf.byteLength < 400) throw new Error('음성이 비어 있습니다');
       return buf;
     } catch (e) {
-      clearTimeout(timer);
-      lastErr = e;
-      if (i < 3) await sleep(1200);
+      lastErr = new Error(e.message || (e.error && e.error.message) || String(e));
+      if (i < 3) { log(`음성 재시도 ${i}/2 (${lastErr.message.slice(0, 50)})`); await sleep(1500); }
     }
   }
   throw lastErr;
@@ -420,9 +427,9 @@ $('go').onclick = async () => {
         : `전체가 ${script.chars}자로 너무 짧다. 각 narration을 공백 제외 ${PER_SCENE}자까지 늘려 전체 200자로 맞춰라. 문장을 쉼표로 이어 설명을 덧붙여라.`;
     }
 
-    const pick = $('voice').value;
+  const pick = $('voice').value;
     const voice = pick !== 'auto' ? pick
-      : (script.persona.gender === 'male' ? 'ko-KR-HyunsuMultilingualNeural' : 'ko-KR-SunHiNeural');
+      : (script.persona.gender === 'male' ? 'gemini:Puck' : 'polly:Seoyeon');
     log(`화자: ${script.persona.gender === 'male' ? '남성' : '여성'} · ${script.persona.tone} / 음성 ${voice}`);
 
     const v = await makeVoice(script, voice);
