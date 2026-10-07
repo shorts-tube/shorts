@@ -351,14 +351,14 @@ const STYLE = '한국어를 밝고 친근한 쇼핑 방송 톤으로, 조금 빠
 function ttsOptions(voice) {
   const [kind, name] = voice.split(':');
 
-  if (kind === 'gemini') {
+   if (kind === 'gemini') {
     return {
       provider: 'gemini',
       model: 'gemini-3.8-flash-tts',
       voice: name,
-      instructions: STYLE,
     };
   }
+
   if (kind === 'openai') {
     return {
       provider: 'openai',
