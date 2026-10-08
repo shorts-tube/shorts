@@ -46,16 +46,20 @@
   <div class="muted" id="urlinfo"></div>
   <img id="preview" alt="">
 
-  <label>모델명</label>
-  <input type="text" id="model" placeholder="링크 분석 후 자동 입력">
+  <details id="manual">
+    <summary style="cursor:pointer;font-size:13px;color:#555;margin-top:12px">자동 입력된 제품명 · 모델명 보기 / 직접 수정</summary>
+    <label>제품명</label>
+    <input type="text" id="pname" placeholder="링크 분석 후 자동 입력">
+    <label>모델명</label>
+    <input type="text" id="model" placeholder="링크 분석 후 자동 입력">
+    <label>제품 이미지 (링크에서 못 가져왔을 때만)</label>
+    <input type="file" id="img" accept="image/*">
+    <div class="muted" id="imginfo"></div>
+  </details>
 
-  <label>제품 이미지 (선택 · 링크에서 못 가져왔을 때만)</label>
-  <input type="file" id="img" accept="image/*">
-  <div class="muted" id="imginfo"></div>
 
 
-  <label>제품명</label>
-  <input type="text" id="pname" placeholder="분석 후 자동 입력 · 직접 수정 가능">
+
 
   <label>특장점 (한 줄에 하나)</label>
   <textarea id="feat" rows="7" placeholder="분석 후 자동 입력 · 직접 수정 가능"></textarea>
@@ -253,10 +257,12 @@ async function analyze(useSearch) {
   try {
     const page = await fetchPage(url);
     $('urlinfo').textContent = page.ogTitle || page.title || '';
-    log(`페이지 수신 — 본문 ${page.text.length}자`);
-    if (page.text.length < 300) {
-      log('본문이 거의 비어 있습니다. 접근을 막는 쇼핑몰일 수 있으니 제조사 공식 페이지로 바꿔 보세요.');
+    if (page.trail && page.trail.length > 1) log(`링크 추적 ${page.trail.length}단계 → ${page.finalUrl.slice(0, 70)}`);
+    log(`페이지 수신 — 본문 ${page.text.length}자 / 상품 데이터 ${(page.mined || '').length}자`);
+    if (page.text.length + (page.mined || '').length < 300) {
+      log('내용이 거의 비어 있습니다. 접근을 막는 쇼핑몰일 수 있으니 제조사 공식 페이지나 다른 쇼핑몰 링크로 바꿔 보세요.');
     }
+
 
     if (page.ogImage) {
       try { await grabImage(page.ogImage, url); log('대표 이미지를 가져왔습니다.'); }
@@ -269,7 +275,9 @@ async function analyze(useSearch) {
       '페이지 제목: ' + (page.ogTitle || page.title),
       page.desc ? '요약: ' + page.desc : '',
       page.jsonld.length ? '구조화 정보: ' + page.jsonld.join(' ').slice(0, 2000) : '',
+      page.mined ? '페이지에 심어진 상품 데이터:\n' + page.mined : '',
       '본문: ' + page.text,
+
     ].filter(Boolean).join('\n');
 
     const prompt = `아래는 어떤 제품의 판매 페이지에서 긁어온 글입니다. 배송·교환 안내, 다른 상품 추천, 메뉴 글자, 회사 소개는 무시하고 이 제품 자체의 정보만 추리세요.${useSearch ? '\n페이지 내용이 부족하면 검색으로 보완하세요.' : ''}
@@ -307,11 +315,18 @@ ${src}`;
       const names = chunks.slice(0, 6).map((c) => (c.web && (c.web.title || c.web.uri)) || '').filter(Boolean);
       $('sources').textContent = '출처: ' + names.join(' · ');
     }
-    log(`분석 완료 — 확인 ${p.confirmed.length}개 / 추정 ${p.guessed.length}개`);
+    log(`분석 완료 — ${$('pname').value || '제품명 미확인'} / 확인 ${p.confirmed.length}개 · 추정 ${p.guessed.length}개`);
+    $('urlinfo').textContent = $('pname').value || page.ogTitle || page.title || '';
+    if (!p.name || !p.confirmed.length) {
+      $('manual').open = true;
+      log('자동 입력이 부족합니다. 접힌 칸을 열어 보완해 주세요.');
+    }
   } catch (e) {
     log('분석 실패: ' + e.message);
-    log('특장점을 직접 채워 넣어도 대본은 만들어집니다.');
+    $('manual').open = true;
+    log('접힌 칸에서 제품명을 직접 넣고 특장점을 채워도 대본은 만들어집니다.');
   }
+
   lock(false);
 }
 
