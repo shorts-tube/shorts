@@ -19,7 +19,8 @@
   .row { display: flex; gap: 8px; margin-top: 10px; }
   .row button { flex: 1; }
   .muted { font-size: 12px; color: #666; margin-top: 6px; line-height: 1.6; }
-  #manual, #bySearch { display: none !important; }
+  #manual, #bySearch, #featbox { display: none !important; }
+
   .row button { flex: 1; }
 
   #preview { max-width: 180px; border-radius: 6px; margin-top: 8px; display: block; }
@@ -61,8 +62,11 @@
     <div class="muted" id="imginfo"></div>
   </details>
 
+  <div id="featbox">
   <label>특장점 (한 줄에 하나)</label>
   <textarea id="feat" rows="7" placeholder="분석 후 자동 입력 · 직접 수정 가능"></textarea>
+  </div>
+
   <div class="muted" id="sources"></div>
 
   <label>내레이션 음성</label>
