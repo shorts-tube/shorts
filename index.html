@@ -19,7 +19,8 @@
   .row { display: flex; gap: 8px; margin-top: 10px; }
   .row button { flex: 1; }
   .muted { font-size: 12px; color: #666; margin-top: 6px; line-height: 1.6; }
-  #manual, #bySearch, #featbox { display: none !important; }
+  #manual, #bySearch { display: none !important; }
+
 
   .row button { flex: 1; }
 
@@ -395,6 +396,20 @@ async function analyze(useSearch) {
             page.text = ld.text;
             page.ogTitle = page.ogTitle || ld.text.split('\n')[0].slice(0, 120);
             log('제품 정보 확보 — ' + page.ogTitle);
+            try {
+              const nm = page.ogTitle.replace(/[|–—].*$/, '').slice(0, 60);
+              const r2 = await fetch(WORKER + '/lookup', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ q: nm + ' 사양 소재 특징' }),
+              });
+              const d2 = await r2.json();
+              if (d2.text && d2.text.length > 30) {
+                page.text += '\n' + d2.text;
+                log('추가 자료 ' + d2.text.length + '자 보강');
+              }
+            } catch (e) {}
+
           } else {
             log('번호 조회 결과 없음: ' + JSON.stringify(ld).slice(0, 150));
           }
@@ -404,7 +419,12 @@ async function analyze(useSearch) {
       }
     }
 
+    if (page.text.length > 300) {
+      useSearch = false;
+      log('확보한 자료로 바로 정리합니다. (추가 검색 생략)');
+    }
     const canSearch = useSearch && !!(page.ogTitle || page.title);
+
 
     if (canSearch) {
       log('검색으로 제품 정보를 모으는 중…');
@@ -472,7 +492,8 @@ ${searched ? '\n--- 검색으로 찾은 내용 ---\n' + searched : ''}`;
     const conf = (p.confirmed || []).filter((s) => s && !BAN.test(s));
     const gues = (p.guessed || []).filter((s) => s && !BAN.test(s));
 
-    if (p.name === '확인불가' || conf.length + gues.length < 3) {
+    if (p.name === '확인불가' || conf.length + gues.length < 2) {
+
       if (!useSearch) {
         log('페이지에서 제품 정보를 찾지 못했습니다. 검색으로 다시 시도합니다… (20초쯤)');
         lock(false);
