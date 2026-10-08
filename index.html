@@ -324,7 +324,10 @@ async function analyze(useSearch) {
     ].filter(Boolean).join('\n');
 
     let searched = '';
+    const hint = $('pname').value.trim();
+    if (hint && !page.ogTitle) { page.ogTitle = hint; log('직접 적으신 제품명으로 검색합니다 — ' + hint); }
     const canSearch = useSearch && !!(page.ogTitle || page.title);
+
     if (useSearch && !canSearch) {
       log('제품명을 모르는 상태라 검색을 건너뜁니다. (주소만으로 검색하면 택배 조회 사이트가 나옵니다)');
     }
@@ -400,9 +403,13 @@ ${searched ? '\n--- 검색으로 찾은 내용 ---\n' + searched : ''}`;
         lock(false);
         return analyze(true);
       }
-      log('이 링크로는 제품을 특정하지 못했습니다. 제조사 공식 상품 페이지 주소를 넣거나, 접힌 줄을 눌러 이미지를 직접 올려 주세요.');
+      log('이 쇼핑몰이 자동 접속을 막고 있어 페이지를 읽지 못했습니다. (알리익스프레스가 대표적입니다)');
+      log('해결 방법 — 제품 페이지에서 제품 이름을 복사해 아래 "직접 수정"의 제품명 칸에 붙여넣고 ① 을 다시 누르세요. 이름만 있으면 나머지는 검색으로 자동으로 채웁니다.');
+      $('manual').open = true;
+      $('pname').focus();
       lock(false);
       return;
+
     }
 
     $('pname').value = p.name || page.ogTitle || page.title || '';
