@@ -324,9 +324,58 @@ async function analyze(useSearch) {
     ].filter(Boolean).join('\n');
 
     let searched = '';
+    if (!page.ogTitle && !page.title) {
+      const idm = (page.finalUrl || url).match(/\/(?:item|i|p)\/(?:[^\/]*?-)?(\d{8,})/i);
+      const key = idm ? idm[1] : '';
+      if (key) {
+        log('쇼핑몰이 막혀 있어 상품 번호로 제품명을 찾는 중… — ' + key);
+        try {
+          const lr = await fetch(WORKER + '/lookup', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ q: '"' + key + '"' }),
+          });
+          const ld = await lr.json();
+          if (ld.text && ld.text.length > 20) {
+            page.text = ld.text;
+            const cand = ld.text.split('\n').find((s) => s.length > 12 && !/^SKU|^\d+$/.test(s));
+            if (cand) { page.ogTitle = cand.slice(0, 120); log('제품명 확보 — ' + page.ogTitle); }
+            useSearch = true;
+          } else {
+            log('상품 번호로도 찾지 못했습니다.');
+          }
+        } catch (e) { log('번호 조회 실패: ' + e.message.slice(0, 60)); }
+      }
+    }
+
     const hint = $('pname').value.trim();
-    if (hint && !page.ogTitle) { page.ogTitle = hint; log('직접 적으신 제품명으로 검색합니다 — ' + hint); }
+    if (hint && !page.ogTitle) { page.ogTitle = hint; }
+    if (!page.ogTitle) {
+      const idm = (page.finalUrl || url).match(/\/(?:item|i|p|products?)\/(?:[^\/]*?-)?(\d{8,})/i);
+      if (idm) {
+        log('쇼핑몰이 막혀 있어 상품 번호로 제품명을 찾는 중… — ' + idm[1]);
+        try {
+          const lr = await fetch(WORKER + '/lookup', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ q: '"' + idm[1] + '"' }),
+          });
+          const ld = await lr.json();
+          if (ld.text && ld.text.length > 30) {
+            page.text = ld.text;
+            page.ogTitle = ld.text.split('\n')[0].slice(0, 120);
+            useSearch = true;
+            log('제품명 확보 — ' + page.ogTitle);
+          } else {
+            log('상품 번호로도 찾지 못했습니다.');
+          }
+        } catch (e) { log('번호 조회 실패: ' + e.message.slice(0, 60)); }
+      }
+    }
+
     const canSearch = useSearch && !!(page.ogTitle || page.title);
+
+
 
     if (useSearch && !canSearch) {
       log('제품명을 모르는 상태라 검색을 건너뜁니다. (주소만으로 검색하면 택배 조회 사이트가 나옵니다)');
