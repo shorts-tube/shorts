@@ -19,6 +19,9 @@
   .row { display: flex; gap: 8px; margin-top: 10px; }
   .row button { flex: 1; }
   .muted { font-size: 12px; color: #666; margin-top: 6px; line-height: 1.6; }
+  #manual, #bySearch { display: none !important; }
+  .row button { flex: 1; }
+
   #preview { max-width: 180px; border-radius: 6px; margin-top: 8px; display: block; }
   pre#log { background: #1e1e1e; color: #b8e986; padding: 12px; border-radius: 8px;
             font-size: 12px; max-height: 200px; overflow: auto; white-space: pre-wrap; line-height: 1.6; }
@@ -373,13 +376,32 @@ async function analyze(useSearch) {
       }
     }
 
+    if (!page.ogTitle || page.text.length < 300) {
+      const idm = (page.finalUrl || url).match(/(\d{10,})/);
+      if (idm) {
+        log('상품 번호로 제품 정보를 찾는 중… — ' + idm[1]);
+        try {
+          const lr = await fetch(WORKER + '/lookup', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ q: '"' + idm[1] + '"' }),
+          });
+          const ld = await lr.json();
+          if (ld.text && ld.text.length > 30) {
+            page.text = ld.text;
+            page.ogTitle = page.ogTitle || ld.text.split('\n')[0].slice(0, 120);
+            log('제품 정보 확보 — ' + page.ogTitle);
+          } else {
+            log('번호 조회 결과 없음: ' + JSON.stringify(ld).slice(0, 150));
+          }
+        } catch (e) { log('번호 조회 실패: ' + e.message.slice(0, 80)); }
+      } else {
+        log('주소에서 상품 번호를 찾지 못했습니다.');
+      }
+    }
+
     const canSearch = useSearch && !!(page.ogTitle || page.title);
 
-
-
-    if (useSearch && !canSearch) {
-      log('제품명을 모르는 상태라 검색을 건너뜁니다. (주소만으로 검색하면 택배 조회 사이트가 나옵니다)');
-    }
     if (canSearch) {
       log('검색으로 제품 정보를 모으는 중…');
 
@@ -452,12 +474,10 @@ ${searched ? '\n--- 검색으로 찾은 내용 ---\n' + searched : ''}`;
         lock(false);
         return analyze(true);
       }
-      log('이 쇼핑몰이 자동 접속을 막고 있어 페이지를 읽지 못했습니다. (알리익스프레스가 대표적입니다)');
-      log('해결 방법 — 제품 페이지에서 제품 이름을 복사해 아래 "직접 수정"의 제품명 칸에 붙여넣고 ① 을 다시 누르세요. 이름만 있으면 나머지는 검색으로 자동으로 채웁니다.');
-      $('manual').open = true;
-      $('pname').focus();
+      log('제품 정보를 찾지 못했습니다. 잠시 뒤 ① 을 다시 눌러 보시고, 계속 안 되면 다른 쇼핑몰의 같은 제품 링크를 넣어 주세요.');
       lock(false);
       return;
+
 
     }
 
