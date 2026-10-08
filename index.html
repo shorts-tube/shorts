@@ -435,19 +435,14 @@ async function makeVoice(script, voice) {
   let total = 0;
   bufs.forEach((b, i) => { total += b.duration + (i < bufs.length - 1 ? GAP : 0); });
 
-  const octx = new OfflineAudioContext(1, Math.ceil(total * sr), sr);
   const timeline = [];
   let t = 0;
   bufs.forEach((b, i) => {
-    const src = octx.createBufferSource();
-    src.buffer = b;
-    src.connect(octx.destination);
-    src.start(t);
     timeline.push({ start: +t.toFixed(2), end: +(t + b.duration).toFixed(2) });
     t += b.duration + (i < bufs.length - 1 ? GAP : 0);
   });
 
-  const rendered = await octx.startRendering();
+
   ac.close();
 
   const clips = raw.map((r) => {
@@ -455,8 +450,9 @@ async function makeVoice(script, voice) {
     return { blob, url: URL.createObjectURL(blob) };
   });
 
-  return { audio: toWav(rendered), buffer: rendered, clips, duration: +rendered.duration.toFixed(1), timeline };
+  return { parts: bufs, clips, duration: +t.toFixed(1), timeline };
 }
+
 
 function toWav(ab) {
   const ch = ab.getChannelData(0);
@@ -518,7 +514,7 @@ $('go').onclick = async () => {
 
 function render(script, voice) {
   const good = voice.duration >= 28 && voice.duration <= 42;
- const url = URL.createObjectURL(voice.audio);
+
   const esc = (s) => String(s).replace(/</g, '&lt;');
 
   let h = '<div class="card">';
@@ -527,7 +523,7 @@ function render(script, voice) {
   h += `<div class="muted">화자 선택 이유: ${esc(script.persona.reason)}</div>`;
   h += `<div style="margin:10px 0"><button id="playAll">▶ 전체 음성 재생</button> <button id="stopAll">■ 정지</button></div>`;
 
- h += `<div style="margin-top:8px"><a href="${url}" download="narration.wav">음성 파일 내려받기</a></div>`;
+
   script.scenes.forEach((s, i) => {
     const t = voice.timeline[i];
     h += `<div class="scene"><b>${i + 1}. ${esc(s.caption)}</b> <span class="muted">${t.start}s~${t.end}s · ${noSpace(s.narration)}자</span><br>${esc(s.narration)}`;
@@ -540,19 +536,26 @@ function render(script, voice) {
 
   const stop = () => {
     if (!window.__p) return;
-    try { window.__p.src.stop(); window.__p.ac.close(); } catch (e) {}
+    try { window.__p.nodes.forEach((n) => n.stop()); window.__p.ac.close(); } catch (e) {}
+
     window.__p = null;
   };
 
   $('playAll').onclick = () => {
     stop();
-    const ac = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: voice.buffer.sampleRate });
-    const src = ac.createBufferSource();
-    src.buffer = voice.buffer;
-    src.connect(ac.destination);
-    src.start();
-    window.__p = { ac, src };
+    const ac = new (window.AudioContext || window.webkitAudioContext)();
+    const base = ac.currentTime + 0.15;
+    const nodes = [];
+    voice.parts.forEach((b, i) => {
+      const s = ac.createBufferSource();
+      s.buffer = b;
+      s.connect(ac.destination);
+      s.start(base + voice.timeline[i].start);
+      nodes.push(s);
+    });
+    window.__p = { ac, nodes };
   };
+
 
   $('stopAll').onclick = stop;
 
