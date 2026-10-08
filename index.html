@@ -294,22 +294,7 @@ async function analyze(useSearch) {
       page.mined = '';
     }
 
-    if (page.text.length + (page.mined || '').length < 800) {
-
-      log('본문이 비어 있어 다른 방법으로 한 번 더 읽어 봅니다…');
-      try {
-        const jr = await fetch('https://r.jina.ai/' + (page.finalUrl || url), {
-          headers: { 'x-respond-with': 'text' },
-        });
-        if (jr.ok) {
-          const md = (await jr.text()).slice(0, 12000);
-          if (md.length > page.text.length) {
-            page.text = md;
-            log(`다시 읽기 성공 — 본문 ${md.length}자`);
-          }
-        }
-      } catch (e) { log('다시 읽기 실패'); }
-    }
+ 
 
     if (page.text.length + (page.mined || '').length < 800 && !useSearch) {
       useSearch = true;
@@ -382,7 +367,10 @@ async function analyze(useSearch) {
     }
 
     if (!page.ogTitle || page.text.length < 300) {
+      const ac = new AbortController();
+      setTimeout(() => ac.abort(), 20000);
       const idm = (page.finalUrl || url).match(/(\d{10,})/);
+
       if (idm) {
         log('상품 번호로 제품 정보를 찾는 중… — ' + idm[1]);
         try {
@@ -390,7 +378,9 @@ async function analyze(useSearch) {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ q: '"' + idm[1] + '"' }),
+            signal: ac.signal,
           });
+
           const ld = await lr.json();
           if (ld.text && ld.text.length > 30) {
             page.text = ld.text;
