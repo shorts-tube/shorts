@@ -91,7 +91,8 @@
 
 <script>
 const WORKER = 'https://gemini-proxy.webnjw01.workers.dev';
-const TEXT_MODELS = ['gemini-3.5-flash-lite', 'gemini-3.8-flash', 'gemini-2.5-flash-lite', 'gemini-2.5-flash'];
+const TEXT_MODELS = ['gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-2.5-flash-lite', 'gemini-2.5-flash'];
+
 
 const SCENES = 6;
 const PER_SCENE = 24;
@@ -341,49 +342,56 @@ async function analyze(useSearch) {
       }
     }
 
-     const hint = $('pname').value.trim();
-    if (hint && !page.ogTitle) { page.ogTitle = hint; }
+    // 구글(url_context)이 상품 페이지를 직접 열어서 읽게 한다
+    if (page.text.length < 500) {
+      log('구글에게 상품 페이지를 직접 읽어 달라고 요청 중… (20~40초)');
+      const ask =
+        '아래 상품 페이지를 열어서 제품 정보만 정리해 주세요.\n' +
+        (page.finalUrl || url) + '\n\n' +
+        '정리할 것: 브랜드, 정식 제품명, 모델명/품번, 소재, 크기·용량, 주요 기능, 사용 상황.\n' +
+        '배송·쿠폰·결제·환불·판매자 안내·가격·리뷰 수는 절대 쓰지 마세요.\n' +
+        '페이지를 열 수 없으면 "읽기실패" 한 단어만 답하세요.';
 
-    if (!page.ogTitle || page.text.length < 300) {
-      const idm = url.match(/(\d{10,})/) || String(page.finalUrl || '').match(/(\d{10,})/);
-      if (!idm) {
-        log('주소에서 상품 번호를 찾지 못했습니다.');
-      } else {
-        log('상품 번호로 제품 정보를 찾는 중… — ' + idm[1]);
-        const ask = async (q) => {
-          const ac = new AbortController();
-          const tm = setTimeout(() => ac.abort(), 20000);
-          try {
-            const r = await fetch(WORKER + '/lookup', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ q }),
-              signal: ac.signal,
-            });
-            const d = await r.json();
-            clearTimeout(tm);
-            return d.text || '';
-          } catch (e) { clearTimeout(tm); return ''; }
-        };
+      for (const m of ['gemini-3.8-flash', 'gemini-3.5-flash-lite']) {
+        try {
+          const ac2 = new AbortController();
+          const t2 = setTimeout(() => ac2.abort(), 60000);
+          const r = await fetch(WORKER, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              model: m,
+              payload: {
+                contents: [{ parts: [{ text: ask }] }],
+                tools: [{ url_context: {} }],
+                generationConfig: { temperature: 0.2 },
+              },
+            }),
+            signal: ac2.signal,
+          });
+          clearTimeout(t2);
+          const d = await r.json();
+          const cand = (d.candidates || [])[0] || {};
+          const parts = (cand.content && cand.content.parts) || [];
+          const out = parts.map((p) => p.text || '').join('').trim();
 
-        const t1 = await ask('"' + idm[1] + '"');
-        if (t1.length > 30) {
-          page.text = t1;
-          const cand = t1.split('\n').find((s) =>
-            /[A-Za-z가-힣]{4,}/.test(s) && !/^["']?\d+["']?$/.test(s.trim()));
-          page.ogTitle = cand ? cand.slice(0, 120) : '';
-          log(page.ogTitle ? '제품명 확보 — ' + page.ogTitle : '제품명을 추려내지 못했습니다.');
-
-          if (page.ogTitle) {
-            const nm = page.ogTitle.replace(/[|–—].*$/, '').replace(/["']/g, '').slice(0, 60);
-            const t2 = await ask(nm + ' 소재 사양 특징');
-            if (t2.length > 30) { page.text += '\n' + t2; log('추가 자료 ' + t2.length + '자 보강'); }
+          if (out.length > 50 && !/읽기실패/.test(out)) {
+            page.text = out;
+            if (!page.ogTitle) {
+              const line = out.split('\n').find((s) => /[A-Za-z가-힣]{3,}/.test(s)) || '';
+              page.ogTitle = line.replace(/^[-*#\s]+/, '').slice(0, 120);
+            }
+            log('구글이 페이지를 읽었습니다 — ' + out.length + '자 / ' + page.ogTitle);
+            break;
           }
-        } else {
-          log('상품 번호로 찾지 못했습니다.');
+          log(m + ' : 페이지를 읽지 못했습니다.');
+        } catch (e) {
+          log(m + ' 오류: ' + String(e.message).slice(0, 60));
         }
       }
+      if (page.text.length < 100) log('구글도 이 페이지를 읽지 못했습니다.');
     }
+
 
     if (page.text.length > 300) {
 
