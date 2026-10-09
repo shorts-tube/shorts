@@ -19,7 +19,13 @@
   .row { display: flex; gap: 8px; margin-top: 10px; }
   .row button { flex: 1; }
   .muted { font-size: 12px; color: #666; margin-top: 6px; line-height: 1.6; }
-  #manual, #bySearch { display: none !important; }
+  .thumbs { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+  .thumbs figure { margin: 0; width: 96px; text-align: center; }
+  .thumbs img { width: 96px; height: 96px; object-fit: cover; border-radius: 6px;
+                border: 3px solid transparent; cursor: pointer; display: block; }
+  .thumbs img.main { border-color: #1a73e8; }
+  .thumbs figcaption { font-size: 11px; color: #666; margin-top: 2px; }
+
 
 
   .row button { flex: 1; }
@@ -42,26 +48,28 @@
 <h1>쇼츠 대본 · 음성 생성기</h1>
 
 <div class="card">
-  <label>제품 페이지 링크</label>
-  <input type="text" id="url" placeholder="https://... 상품 상세 페이지 주소를 붙여넣으세요">
+  <label>제품 사진 · 상세페이지 캡처 (여러 장 가능)</label>
+  <input type="file" id="img" accept="image/*" multiple>
+  <div class="muted">제품 사진 한 장과 사양·특징이 적힌 부분 캡처를 함께 올리면 가장 정확합니다.
+    긴 페이지는 두세 장으로 나눠 찍으세요. 사진을 눌러 영상에 쓸 대표 사진을 고릅니다.</div>
+  <div class="thumbs" id="thumbs"></div>
+  <div class="muted" id="imginfo"></div>
 
-  <div class="row">
-    <button id="byUrl">① 링크 분석</button>
-    <button id="bySearch">① 링크 + 검색 (느림)</button>
-  </div>
+  <button id="byImg" style="width:100%;margin-top:12px">① 사진 분석</button>
   <div class="muted" id="urlinfo"></div>
-  <img id="preview" alt="">
 
-  <details id="manual">
-    <summary>자동 입력된 제품명 · 모델명 보기 / 직접 수정</summary>
+  <details id="manual" open>
+    <summary>제품명 · 모델명 (비워 두면 사진에서 읽어 냅니다)</summary>
     <label>제품명</label>
-    <input type="text" id="pname" placeholder="링크 분석 후 자동 입력">
+    <input type="text" id="pname" placeholder="분석 후 자동 입력">
     <label>모델명</label>
-    <input type="text" id="model" placeholder="링크 분석 후 자동 입력">
-    <label>제품 이미지 (링크에서 못 가져왔을 때만)</label>
-    <input type="file" id="img" accept="image/*">
-    <div class="muted" id="imginfo"></div>
+    <input type="text" id="model" placeholder="분석 후 자동 입력">
   </details>
+
+  <input type="hidden" id="url" value="">
+  <button id="bySearch" style="display:none"></button>
+  <img id="preview" alt="" style="display:none">
+
 
   <div id="featbox">
   <label>특장점 (한 줄에 하나)</label>
@@ -115,21 +123,39 @@ function log(msg) {
   $('log').scrollTop = $('log').scrollHeight;
 }
 function resetLog(m) { $('log').textContent = m; }
-function lock(on) { ['byUrl', 'bySearch', 'go'].forEach((id) => { $(id).disabled = on; }); }
+function lock(on) { ['byImg', 'go'].forEach((id) => { $(id).disabled = on; }); }
+
 
 /* ---------- 이미지 축소 ---------- */
+let SHOTS = [];
+let MAIN = 0;
+
 $('img').onchange = async (e) => {
-  const file = e.target.files[0];
-  if (!file) return;
+  const files = Array.from(e.target.files || []).slice(0, 6);
+  if (!files.length) return;
+  SHOTS = [];
+  $('imginfo').textContent = '이미지를 준비하는 중…';
   try {
-    const r = await compress(file);
-    IMG = r.b64;
-    $('preview').src = 'data:image/jpeg;base64,' + r.b64;
-    $('imginfo').textContent = `${r.ow}×${r.oh} → ${r.w}×${r.h} / 약 ${Math.round(r.bytes / 1024)}KB`;
+    for (const f of files) SHOTS.push(await compress(f, 1280, 0.88));
+    MAIN = 0;
+    IMG = SHOTS[0].b64;
+    drawThumbs();
+    const kb = Math.round(SHOTS.reduce((a, s) => a + s.bytes, 0) / 1024);
+    $('imginfo').textContent = `${SHOTS.length}장 준비됨 / 합계 약 ${kb}KB`;
   } catch (err) {
     $('imginfo').textContent = '이미지를 읽을 수 없습니다: ' + err.message;
   }
 };
+
+function drawThumbs() {
+  $('thumbs').innerHTML = SHOTS.map((s, i) =>
+    `<figure><img src="data:image/jpeg;base64,${s.b64}" data-i="${i}" class="${i === MAIN ? 'main' : ''}">` +
+    `<figcaption>${i === MAIN ? '대표' : i + 1}</figcaption></figure>`).join('');
+  $('thumbs').querySelectorAll('img').forEach((el) => {
+    el.onclick = () => { MAIN = +el.dataset.i; IMG = SHOTS[MAIN].b64; drawThumbs(); };
+  });
+}
+
 
 function compress(file, MAX = 768, Q = 0.85) {
   return new Promise((resolve, reject) => {
@@ -257,8 +283,69 @@ async function grabImage(imgUrl, referer) {
   $('imginfo').textContent = `링크에서 가져온 이미지 ${c.w}×${c.h}`;
 }
 
-$('byUrl').onclick = () => analyze(false);
-$('bySearch').onclick = () => analyze(true);
+$('byImg').onclick = () => analyzeShots();
+
+async function analyzeShots() {
+  if (!SHOTS.length) { resetLog('제품 사진이나 상세페이지 캡처를 먼저 올려 주세요.'); return; }
+
+  lock(true);
+  resetLog(`사진 ${SHOTS.length}장을 읽는 중…`);
+  $('sources').textContent = '';
+
+  const hintName = $('pname').value.trim();
+  const hintModel = $('model').value.trim();
+
+  const prompt =
+    '올린 사진들은 한 제품의 제품 사진과 상품 상세페이지 캡처입니다.\n' +
+    '사진 속에 적힌 한글과 영문 글자를 빠짐없이 읽어서 제품 정보를 정리하세요.\n' +
+    (hintName ? '참고 제품명: ' + hintName + '\n' : '') +
+    (hintModel ? '참고 모델명: ' + hintModel + '\n' : '') +
+    '\n' +
+    '- name: 브랜드를 포함한 정식 제품명. 빈 값 금지.\n' +
+    '- model: 사진에 적힌 모델명이나 품번. 없으면 name을 짧게 줄여 쓰세요. 빈 값 금지.\n' +
+    '- confirmed: 사진에 분명히 적혀 있거나 사진으로 확인되는 사실만. 한 줄 30자 이내, 최대 8개.\n' +
+    '  사진 속 사양표의 숫자(용량, 크기, 무게, 소재)는 적혀 있다면 그대로 옮겨 적으세요.\n' +
+    '- guessed: 사진에 없지만 이 제품 종류라면 당연히 기대되는 특징. 한 줄 30자 이내.\n' +
+    '  confirmed가 3개 미만이면 guessed를 5개 이상 채우세요.\n' +
+    '\n' +
+    '금지 1: 사진에 없는 숫자, 인증, 수상, 후기, 가격, 순위를 지어내지 마세요.\n' +
+    '금지 2: 무료배송, 쿠폰, 할인, 적립, 교환, 환불, 고객센터 같은 쇼핑몰 안내는 특장점이 아닙니다.\n' +
+    '금지 3: 오직 제품 자체의 기능, 구조, 소재, 사용 방법, 쓰임새만 적으세요.';
+
+  const parts = [{ text: prompt }];
+  SHOTS.forEach((s) => parts.push({ inlineData: { mimeType: 'image/jpeg', data: s.b64 } }));
+
+  try {
+    const data = await callGemini({
+      contents: [{ parts }],
+      generationConfig: {
+        temperature: 0.3,
+        responseMimeType: 'application/json',
+        responseSchema: RESEARCH_SCHEMA,
+      },
+    }, 90000);
+
+    let p;
+    try { p = JSON.parse(textOf(data)); }
+    catch (e) { throw new Error('분석 결과를 읽지 못했습니다: ' + textOf(data).slice(0, 120)); }
+
+    const BAN = /무료\s*배송|빠른\s*배송|배송비|쿠폰|할인|특가|최저가|신규\s*회원|적립|안전\s*결제|정품\s*보장|교환|환불|고객\s*센터|합리적인\s*가격/;
+    const conf = (p.confirmed || []).filter((s) => s && !BAN.test(s));
+    const gues = (p.guessed || []).filter((s) => s && !BAN.test(s));
+
+    $('pname').value = p.name || hintName || '';
+    $('model').value = p.model || p.name || hintModel || '';
+    $('feat').value = conf.concat(gues.map((v) => v + ' (추정)')).join('\n');
+    $('urlinfo').textContent = $('pname').value;
+
+    log(`분석 완료 — ${$('pname').value} / 확인 ${conf.length}개 · 추정 ${gues.length}개`);
+    if (!conf.length) log('사진에서 읽어낸 글자가 없습니다. 사양이 적힌 부분을 더 크게 캡처해 보세요.');
+  } catch (e) {
+    log('분석 실패: ' + e.message.slice(0, 200));
+  }
+  lock(false);
+}
+
 
 async function analyze(useSearch) {
   const typed = $('url').value.trim();
@@ -631,18 +718,19 @@ $('go').onclick = async () => {
   if (!feats) missing.push('특장점');
 
   if (missing.length) {
-    if (!/^https?:\/\//i.test($('url').value.trim())) {
-      resetLog('제품 페이지 링크를 먼저 넣어 주세요.');
+    if (!SHOTS.length) {
+      resetLog('제품 사진을 먼저 올리고 ① 사진 분석을 눌러 주세요.');
       return;
     }
-    log('분석이 안 되어 있어 먼저 링크를 분석합니다.');
-    await analyze(false);
+    log('분석이 안 되어 있어 먼저 사진을 분석합니다.');
+    await analyzeShots();
     if (!$('pname').value.trim() || !$('feat').value.trim()) {
-      log('분석으로 채워지지 않았습니다. 접힌 줄을 눌러 직접 입력해 주세요.');
+      log('분석으로 채워지지 않았습니다. 제품명과 특장점을 직접 넣어 주세요.');
       return;
     }
     return $('go').onclick();
   }
+
 
   lock(true);
   resetLog('대본을 만듭니다.');
